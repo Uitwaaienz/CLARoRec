@@ -11,40 +11,26 @@ The first run will download the dataset resources. Once the download is complete
 
 ```python run_recbole.py --model=CLARoRec --dataset=ml-1m  --config_files=ml.yaml```
 
+```python run_recbole.py --model=CLARoRec --dataset=amazon-baby --config_files=amazon.yaml```
+
+```python run_recbole.py --model=CLARoRec --dataset=amazon-sports-outdoors  --config_files=amazon.yaml```
+
 ```python run_recbole.py --model=CLARoRec --dataset=amazon-tools-home-improvement --config_files=amazon.yaml```
 
 ```python run_recbole.py --model=CLARoRec --dataset=amazon-musical-instruments  --config_files=amazon.yaml```
 
-```python run_recbole.py --model=CLARoRec --dataset=amazon-electronics --config_files=amazon.yaml```
-
-```python run_recbole.py --model=CLARoRec --dataset=amazon-office-products --config_files=amazon.yaml```
 
 ### Run CLARoRec*
 
 ```python run_recbole.py --model=CLARoRec1 --dataset=ml-1m  --config_files=ml.yaml```
 
+```python run_recbole.py --model=CLARoRec1 --dataset=amazon-baby --config_files=amazon.yaml```
+
+```python run_recbole.py --model=CLARoRec1 --dataset=amazon-sports-outdoors  --config_files=amazon.yaml```
+
 ```python run_recbole.py --model=CLARoRec1 --dataset=amazon-tools-home-improvement --config_files=amazon.yaml```
 
-```python run_recbole.py --model=CLARoRec1 --dataset=amazon-musical-instruments  --config_files=amazon.yaml```
-
-```python run_recbole.py --model=CLARoRec1 --dataset=amazon-electronics --config_files=amazon.yaml```
-
-```python run_recbole.py --model=CLARoRec1 --dataset=amazon-office-products --config_files=amazon.yaml```
-
-### Comparative experiment
-
-```python run_recbole.py --model=SASRec --dataset=ml-1m  --config_files=ml.yaml```
-
-```python run_recbole.py --model=SASRec --dataset=amazon-tools-home-improvement --config_files=amazon.yaml```
-
-```python run_recbole.py --model=SASRec --dataset=amazon-musical-instruments  --config_files=amazon.yaml```
-
-```python run_recbole.py --model=SASRec --dataset=amazon-electronics --config_files=amazon.yaml```
-
-```python run_recbole.py --model=SASRec --dataset=amazon-office-products --config_files=amazon.yaml```
-
-```python run_recbole.py --model=CORE --dataset=ml-1m  --config_files=ml.yaml```
-
+```python run_recbole.py --model=CLARoRec1 --dataset=amazon-musical-instruments --config_files=amazon.yaml```
 
 
 ## Acknowledgment
