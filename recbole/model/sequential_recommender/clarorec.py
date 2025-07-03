@@ -3,7 +3,7 @@ from torch import nn
 from rotary_embedding_torch import RotaryEmbedding
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
-
+from mamba_ssm import Mamba
 
 
 class CLARoRec(SequentialRecommender):
@@ -16,26 +16,29 @@ class CLARoRec(SequentialRecommender):
         self.initializer_range = config["initializer_range"]
         self.dropout_prob = config["dropout_prob"]
         self.n_heads = config["n_heads"]
-        self.attn_dropout_prob = config["attn_dropout_prob"]
-        self.hidden_dropout_prob = config["hidden_dropout_prob"]
         self.hidden_act = config["hidden_act"]
+        self.d_state = config["d_state"]
+        self.d_conv = config["d_conv"]
+        self.expand = config["expand"]
         self.seq_len = self.max_seq_length
         self.item_embedding = nn.Embedding(
             self.n_items, self.hidden_size, padding_idx=0
-        ) 
+        )
         self.LayerNorm = nn.LayerNorm(self.hidden_size, eps=1e-12)
         self.dropout = nn.Dropout(self.dropout_prob)
-        self.claro_layers = CLARoLayer(
+        self.claro_layers = nn.ModuleList([
+            CLARoLayer(
                 hidden_size=self.hidden_size,
                 dropout_prob=self.dropout_prob,
-                attn_dropout_prob=self.attn_dropout_prob,
-                hidden_dropout_prob=self.hidden_dropout_prob,
-                n_layers=self.n_layers,
                 n_heads=self.n_heads,
                 hidden_act=self.hidden_act,
-                seq_len=self.seq_len
+                seq_len=self.seq_len,
+                d_state=self.d_state,
+                d_conv=self.d_conv,
+                expand=self.expand
             )
-        
+            for _ in range(self.n_layers)
+        ])
         if self.loss_type == "BPR":
             self.loss_fct = BPRLoss()
         elif self.loss_type == "CE":
@@ -56,10 +59,11 @@ class CLARoRec(SequentialRecommender):
 
     def forward(self, item_seq, item_seq_len):
         item_emb = self.item_embedding(item_seq)
- 
+
         item_emb = self.LayerNorm(item_emb)
-        item_emb = self.dropout(item_emb) 
-        item_emb = self.claro_layers(item_emb)
+        item_emb = self.dropout(item_emb)
+        for claro_layer in self.claro_layers:
+            item_emb = claro_layer(item_emb)
         seq_output = self.gather_indexes(item_emb, item_seq_len - 1)
         return seq_output
 
@@ -100,42 +104,44 @@ class CLARoRec(SequentialRecommender):
             seq_output, test_items_emb.transpose(0, 1)
         )  # [B, n_items]
         return scores
+
+
 class CLARoLayer(nn.Module):
-    def __init__(self, hidden_size, dropout_prob, n_layers, 
-                 hidden_dropout_prob, attn_dropout_prob, n_heads, hidden_act,seq_len):
+    def __init__(self, hidden_size, dropout_prob,
+                 n_heads, hidden_act, seq_len, d_state, d_conv, expand):
         super().__init__()
-        self.n_layers = n_layers
         self.cnnlayer = Cnnlayer(hidden_size=hidden_size, dropout_prob=dropout_prob)
-        self.latt_layers = nn.ModuleList([
-            LinearAttention(hidden_size=hidden_size, 
-                            seq_len=seq_len, 
-                            n_heads=n_heads, 
-                            attn_dropout_prob=attn_dropout_prob)
-            for _ in range(n_layers)
-        ])
-        self.feed_forward = FeedForward(hidden_size=hidden_size,inner_size=4*hidden_size,
-                                        hidden_dropout_prob=hidden_dropout_prob,
-                                        hidden_act=hidden_act, layer_norm_eps=1e-12,)
+        self.latt_layers = LinearAttention(hidden_size=hidden_size,
+                                           seq_len=seq_len,
+                                           n_heads=n_heads,
+                                           dropout_prob=dropout_prob,
+                                           d_state=d_state,
+                                           d_conv=d_conv,
+                                           expand=expand
+                                           )
+
+        self.feed_forward = FeedForward(hidden_size=hidden_size, inner_size=4 * hidden_size,
+                                        dropout_prob=dropout_prob,
+                                        hidden_act=hidden_act, layer_norm_eps=1e-12, )
+
     def forward(self, input_tensor):
         hidden_states = self.cnnlayer(input_tensor)
-        for latt_layer in self.latt_layers:
-            hidden_states = latt_layer(hidden_states)
+        hidden_states = self.latt_layers(hidden_states)
         hidden_states = self.feed_forward(hidden_states)
         return hidden_states
-        
 
-    
+
 class Cnnlayer(nn.Module):
-    def __init__(self, hidden_size, dropout_prob): 
+    def __init__(self, hidden_size, dropout_prob):
         super(Cnnlayer, self).__init__()
-        self.conv1d = nn.Conv1d(in_channels=hidden_size, out_channels=4*hidden_size, 
+        self.conv1d = nn.Conv1d(in_channels=hidden_size, out_channels=4 * hidden_size,
                                 kernel_size=5, stride=1, padding=2, groups=hidden_size)
         self.gelu = nn.GELU()
-        self.conv1d2 = nn.Conv1d(in_channels=4*hidden_size, out_channels=hidden_size, 
+        self.conv1d2 = nn.Conv1d(in_channels=4 * hidden_size, out_channels=hidden_size,
                                  kernel_size=5, stride=1, padding=2, groups=hidden_size)
         self.dropout = nn.Dropout(dropout_prob)
         self.LayerNorm = nn.LayerNorm(hidden_size, eps=1e-12)
-        
+
     def forward(self, input_tensor):
         hidden_states = input_tensor.permute(0, 2, 1)  # B x D x N
         hidden_states = self.conv1d(hidden_states)  # B x 4D x N
@@ -146,8 +152,9 @@ class Cnnlayer(nn.Module):
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
         return hidden_states
 
+
 class LinearAttention(nn.Module):
-    def __init__(self, hidden_size, seq_len, n_heads,attn_dropout_prob):
+    def __init__(self, hidden_size, seq_len, n_heads, dropout_prob, d_state, d_conv, expand):
         super().__init__()
         self.hidden_size = hidden_size
         self.seq_len = seq_len
@@ -155,10 +162,20 @@ class LinearAttention(nn.Module):
         self.q = nn.Linear(hidden_size, hidden_size)
         self.k = nn.Linear(hidden_size, hidden_size)
         self.v = nn.Linear(hidden_size, hidden_size)
+        self.mamba = Mamba(
+            # This module uses roughly 3 * expand * d_model^2 parameters
+            d_model=hidden_size,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand,
+        )
+        self.gelu = nn.GELU()
         self.gelu = nn.GELU()
         self.rope = RotaryEmbedding(dim=hidden_size)
+        self.fusion_gate = nn.Linear(2 * hidden_size, hidden_size)  # 门控层
         self.LayerNorm = nn.LayerNorm(hidden_size, eps=1e-12)
-        self.dropout = nn.Dropout(attn_dropout_prob)
+        self.dropout = nn.Dropout(dropout_prob)
+
     def forward(self, input_tensor):
         b, n, c = input_tensor.shape
         n_heads = self.n_heads
@@ -166,6 +183,7 @@ class LinearAttention(nn.Module):
         q = self.q(input_tensor)
         k = self.k(input_tensor)
         v = self.v(input_tensor)
+        mamba_out = self.mamba(input_tensor)
         q = self.gelu(q) + 0.21
         k = self.gelu(k) + 0.21
         q_rope = self.rope.rotate_queries_or_keys(q)
@@ -179,14 +197,18 @@ class LinearAttention(nn.Module):
         kv = (k_rope.transpose(-2, -1) * (n ** -0.5)) @ (v * (n ** -0.5))
         hidden_states = q_rope @ kv * z
         hidden_states = hidden_states.permute(0, 2, 1, 3).reshape(b, n, c)
-        hidden_states = self.dropout(hidden_states)      
+        fusion_input = torch.cat([hidden_states, mamba_out], dim=-1)
+        fusion_gate = torch.sigmoid(self.fusion_gate(fusion_input))  # shape: [B, L, D]
+        hidden_states = fusion_gate * hidden_states + (1 - fusion_gate) * mamba_out
+        hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
         return hidden_states
-    
+
+
 class FeedForward(nn.Module):
 
     def __init__(
-        self, hidden_size, inner_size, hidden_dropout_prob, hidden_act, layer_norm_eps
+            self, hidden_size, inner_size, dropout_prob, hidden_act, layer_norm_eps
     ):
         super(FeedForward, self).__init__()
         self.dense_1 = nn.Linear(hidden_size, inner_size)
@@ -194,7 +216,7 @@ class FeedForward(nn.Module):
 
         self.dense_2 = nn.Linear(inner_size, hidden_size)
         self.LayerNorm = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
-        self.dropout = nn.Dropout(hidden_dropout_prob)
+        self.dropout = nn.Dropout(dropout_prob)
 
     def get_hidden_act(self, act):
         ACT2FN = {
@@ -205,7 +227,7 @@ class FeedForward(nn.Module):
             "sigmoid": torch.sigmoid,
         }
         return ACT2FN[act]
-    
+
     def forward(self, input_tensor):
         hidden_states = self.dense_1(input_tensor)
         hidden_states = self.intermediate_act_fn(hidden_states)
